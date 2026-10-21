@@ -46,7 +46,16 @@ def get_original(mod_name, item_name):
 
 _NONE = object()
 
+def _a262_forbid_free_threaded_patching():
+    # The process can become GIL-disabled after initial imports, and stdlib
+    # global monkey patches are not audited for native OS threads on CP315t.
+    from gevent._compat import IS_FREE_THREADED_BUILD
+    if IS_FREE_THREADED_BUILD:
+        raise RuntimeError('gevent stdlib monkey-patching is not qualified on free-threaded CPython')
+
+
 def patch_item(module, attr, newitem):
+    _a262_forbid_free_threaded_patching()
     from ._state import _save
 
     olditem = getattr(module, attr, _NONE)
@@ -56,6 +65,7 @@ def patch_item(module, attr, newitem):
 
 
 def remove_item(module, attr):
+    _a262_forbid_free_threaded_patching()
     from ._state import _save
 
     olditem = getattr(module, attr, _NONE)
@@ -98,6 +108,7 @@ def patch_module(target_module, source_module, items=None,
 
     .. versionadded:: 1.3b1
     """
+    _a262_forbid_free_threaded_patching()
     from gevent import events
     from ._errors import _BadImplements
     from ._util import _notify_patch

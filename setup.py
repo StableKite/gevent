@@ -3,6 +3,7 @@
 """gevent build & installation script"""
 from __future__ import print_function
 import sys
+import sysconfig
 import os
 import os.path
 
@@ -51,7 +52,11 @@ __version__ = read_version()
 from _setuplibev import build_extension as build_libev_extension
 from _setupares import ARES
 
-CORE = cythonize1(build_libev_extension())
+# A263: detect ABI *before* any unaudited extension initialization.
+_CP_FT_BUILD = bool(not PYPY and sysconfig.get_config_var('Py_GIL_DISABLED') == 1)
+# CFFI-only build profile: no direct libev corecext / Cython module compilation.
+# A native gevent release is still NOT allowed until independent Win+Linux QA.
+CORE = None if _CP_FT_BUILD else cythonize1(build_libev_extension())
 
 # Modules that we cythonize for performance.
 # Be careful not to use simple names for these modules,
@@ -175,9 +180,16 @@ EXT_MODULES = [
     TRACER,
 ]
 
+# A263: eliminate ALL unaudited native C / Cython extension builds on cp315t,
+# not merely their runtime imports. CFFI modules are managed separately.
+if _CP_FT_BUILD:
+    EXT_MODULES = []
+    _to_cythonize = []
+
 if bool_from_environ('GEVENTSETUP_DISABLE_ARES'):
     print("c-ares module disabled, not building")
-    EXT_MODULES.remove(ARES)
+    if ARES in EXT_MODULES:
+        EXT_MODULES.remove(ARES)
 
 LIBEV_CFFI_MODULE = 'src/gevent/libev/_corecffi_build.py:ffi'
 LIBUV_CFFI_MODULE = 'src/gevent/libuv/_corecffi_build.py:ffi'
@@ -197,6 +209,8 @@ if not WIN:
 
 cffi_modules.append(LIBUV_CFFI_MODULE)
 
+# A cp315t wheel must be self-sufficient in both GIL-on and GIL-off
+# runtime modes. Do not enable Cython free-threading without a lock audit.
 greenlet_requires = [
     # We need to watch our greenlet version fairly carefully,
     # since we compile cython code that extends the greenlet object.
@@ -212,7 +226,8 @@ greenlet_requires = [
     # now it's RC pending additional testing, so we only require it on 3.12)
     # 3.2 is the first to support Python 3.14a7;
     # 3.2.2 is required for 3.14b1
-    'greenlet >= 3.2.2 ; platform_python_implementation=="CPython"',
+    ('greenlet >= 3.5.6' if _CP_FT_BUILD else 'greenlet >= 3.2.2')
+    + ' ; platform_python_implementation=="CPython"',
 ]
 
 # Note that we don't add cffi to install_requires, it's
@@ -225,8 +240,10 @@ greenlet_requires = [
 # to be the default, and that requires cffi; but don't try to install it
 # on PyPy or it messes up the build
 CFFI_DEP = "cffi >= 2.1.1 ; platform_python_implementation == 'CPython'"
+# CFFI is mandatory for CPython free-threaded builds, including Linux.
+# Existing GIL-enabled CPython packaging semantics are unchanged.
 CFFI_REQUIRES = [
-    CFFI_DEP + " and sys_platform == 'win32'"
+    CFFI_DEP if _CP_FT_BUILD else CFFI_DEP + " and sys_platform == 'win32'"
 ]
 
 

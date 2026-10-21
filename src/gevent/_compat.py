@@ -10,6 +10,7 @@ from __future__ import print_function, absolute_import, division
 
 import sys
 import os
+import sysconfig
 
 
 PY311 = sys.version_info[:2] >= (3, 11)
@@ -22,7 +23,22 @@ LINUX = sys.platform.startswith('linux')
 OSX = MAC = sys.platform == 'darwin'
 
 
-GLOBAL_PURE_PYTHON = bool(PYPY or os.environ.get('PURE_PYTHON'))
+# Safe backend selection for a free-threaded CPython process.
+# Do not opt Cython accelerators in before their cross-thread primitives are audited.
+_is_gil_enabled = getattr(sys, '_is_gil_enabled', None)
+# New A262 series: use ABI (not an import-time GIL snapshot) to disable
+# non-audited Cython acceleration on any free-threaded CPython, even -X gil=1.
+IS_FREE_THREADED_BUILD = bool(not PYPY and sysconfig.get_config_var('Py_GIL_DISABLED') == 1)
+FREE_THREADED_NO_GIL = bool(IS_FREE_THREADED_BUILD and _is_gil_enabled is not None
+                            and not _is_gil_enabled())
+
+def runtime_gil_disabled():
+    """Read the current interpreter GIL state instead of trusting a cached flag."""
+    return bool(IS_FREE_THREADED_BUILD and _is_gil_enabled is not None
+                and not _is_gil_enabled())
+
+GLOBAL_PURE_PYTHON = bool(PYPY or os.environ.get('PURE_PYTHON')
+                          or IS_FREE_THREADED_BUILD)
 # .. versionchanged:: 25.9.1
 #
 # GEVENT_PURE_PYTHON previously was treated like PURE_PYTHON,

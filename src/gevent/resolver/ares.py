@@ -3,6 +3,10 @@
 c-ares based hostname resolver.
 """
 from __future__ import absolute_import, print_function, division
+# New A262 series: block C-ares BEFORE importing its native _cares backend.
+from gevent._compat import IS_FREE_THREADED_BUILD
+if IS_FREE_THREADED_BUILD:
+    raise ImportError('gevent c-ares resolver is unqualified for free-threaded CPython')
 import os
 import warnings
 

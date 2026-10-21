@@ -19,6 +19,8 @@ import textwrap
 
 from gevent._compat import string_types
 from gevent._compat import WIN
+from gevent._compat import IS_FREE_THREADED_BUILD
+from gevent._compat import runtime_gil_disabled
 
 __all__ = [
     'config',
@@ -396,6 +398,65 @@ class Loop(ImportableSetting, Setting):
     }
 
     shortname_map['libuv'] = shortname_map['libuv-cffi']
+
+    # A262 new series: never load the unaudited libev Cython loop on a
+    # free-threaded ABI, including when the process was started with GIL ON.
+    _SAFE_CFFI_PATHS = ('gevent.libev.corecffi.loop', 'gevent.libuv.loop.loop')
+
+    def _default(self):
+        if IS_FREE_THREADED_BUILD:
+            # Honour GEVENT_LOOP only when its ENTIRE candidate list is audited.
+            # validate() rejects unsafe native accelerators and mixed fallback lists.
+            requested = os.environ.get(self.environment_key)
+            if requested is not None:
+                return self._convert(requested)
+            return ['libuv-cffi', 'libev-cffi'] if WIN else ['libev-cffi', 'libuv-cffi']
+        return super(Loop, self)._default()
+
+    def validate(self, value):
+        if not IS_FREE_THREADED_BUILD:
+            return super(Loop, self).validate(value)
+        if isinstance(value, type):
+            # Use exact object identity, not __module__/__name__ (spoofable).
+            was_off = runtime_gil_disabled()
+            for path in self._SAFE_CFFI_PATHS:
+                try:
+                    candidate = self._import_one(path)
+                except ImportError:
+                    continue
+                if was_off and not runtime_gil_disabled():
+                    # Native module import must not silently enable the GIL.
+                    raise RuntimeError('Loading a CFFI loop unexpectedly enabled the GIL')
+                if value is candidate:
+                    return value
+            raise ValueError('Free-threaded gevent requires an audited CFFI loop; unsafe loop class')
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            raise ValueError('Free-threaded gevent requires an audited CFFI loop')
+        candidates = []
+        for name in value:
+            if not isinstance(name, str):
+                raise ValueError('Free-threaded gevent loop candidate must be a string')
+            path = self.shortname_map.get(name, name)
+            if path not in self._SAFE_CFFI_PATHS:
+                # Fail closed on even one malicious fallback (no silent skip).
+                raise ValueError('Unaudited free-threaded loop rejected: %r' % (name,))
+            candidates.append(path)
+        if not candidates:
+            raise ImportError('Free-threaded gevent requires a CFFI event loop')
+        was_off = runtime_gil_disabled()
+        result = self._import_one_of(candidates)
+        if was_off and not runtime_gil_disabled():
+            raise RuntimeError('Loading the CFFI loop unexpectedly enabled the GIL')
+        return result
+
+    def get(self):
+        result = super(Loop, self).get()
+        if IS_FREE_THREADED_BUILD:
+            # Revalidate even if Setting.get() returned a cached object.
+            return self.validate(result)
+        return result
 
 
 class FormatContext(ImportableSetting, Setting):
