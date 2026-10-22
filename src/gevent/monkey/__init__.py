@@ -213,6 +213,8 @@ from ._util import _process_warnings
 
 
 
+
+
 def _patch_sys_std(name):
     from gevent.fileobject import FileObjectThread
     orig = getattr(sys, name)
@@ -374,9 +376,8 @@ def patch_thread(threading=True, _threading_local=True, Event=True, logging=True
         *existing_locks* imports :mod:`concurrent.futures.thread` and replaces
         its ``_global_shutdown_lock``.
     """
-    from gevent._compat import IS_FREE_THREADED_BUILD
-    if IS_FREE_THREADED_BUILD:
-        raise RuntimeError('gevent monkey.patch_thread is not qualified on free-threaded CPython')
+    from ._ft_preflight import require_single_native_thread
+    require_single_native_thread()
     if sys.version_info[:2] < (3, 13):
         from ._patch_thread_lt313 import Patcher
     else:
@@ -681,10 +682,8 @@ def patch_all(socket=True, dns=True, time=True, select=True, thread=True, os=Tru
        this API positionally will need to migrate to keywords.
     """
     # pylint:disable=too-many-locals,too-many-branches
-    from gevent._compat import IS_FREE_THREADED_BUILD
-    if IS_FREE_THREADED_BUILD:
-        # Before _check_repatching, imports, hooks or any stdlib mutation.
-        raise RuntimeError('gevent monkey.patch_all is not qualified on free-threaded CPython')
+    from ._ft_preflight import require_single_native_thread
+    require_single_native_thread()
 
     # See test__threading.py for implications of the order in which
     # we patch modules. We could rearrange the arguments, but they're not

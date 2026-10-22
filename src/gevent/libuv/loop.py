@@ -10,6 +10,7 @@ from collections import namedtuple
 from zope.interface import implementer
 
 from gevent import getcurrent
+from gevent._compat import IS_FREE_THREADED_BUILD
 from gevent._ffi.loop import AbstractCallbacks
 from gevent._ffi.loop import AbstractLoop
 from gevent._ffi.loop import assign_standard_callbacks
@@ -107,13 +108,20 @@ class loop(AbstractLoop):
     _TIMER_POINTER = _CHECK_POINTER # This is poorly named. It's for the callback "timer"
 
     def __init__(self, flags=None, default=None):
+        # Each native OS thread needs its own uv_loop_t. The libuv
+        # uv_default_loop() is a process-global singleton and can race
+        # across native threads, including with GIL=1 when CFFI drops it.
+        if IS_FREE_THREADED_BUILD:
+            if default is True:
+                raise ValueError('Free-threaded gevent requires private libuv loops')
+            default = False
         AbstractLoop.__init__(self, ffi, libuv, _watchers, flags, default)
         self._child_watchers = defaultdict(list)
         self._io_watchers = {}
         self._fork_watchers = set()
         self._pid = os.getpid()
         # pylint:disable-next=superfluous-parens
-        self._default = (self._ptr == libuv.uv_default_loop())
+        self._default = False if IS_FREE_THREADED_BUILD else (self._ptr == libuv.uv_default_loop())
         self._queued_callbacks = []
 
     def _queue_callback(self, watcher_ptr, revents):

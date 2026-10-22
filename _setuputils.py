@@ -258,7 +258,13 @@ def cythonize1(ext):
                 # Mostly we're compatible with free-threading, but
                 # some of our cross-thread locking primitives still
                 # depend on the gil.
-                # 'freethreading_compatible': True,
+                # gevent.resolver.cares is the only audited candidate
+                # for CPython's free-threaded module opt-out of the GIL.
+                # Other native extensions must not opt out by accident.
+                'freethreading_compatible': (
+                    ext.name == 'gevent.resolver.cares'
+                    and sysconfig.get_config_var('Py_GIL_DISABLED') == 1
+                ),
             },
             # XXX: Cython developers say: "Please use C macros instead
             # of Pyrex defines. Taking this kind of decision based on

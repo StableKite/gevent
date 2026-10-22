@@ -1,3 +1,16 @@
+# A279 experimental CPython 3.15t native gevent; full upstream compatibility remains NO-GO
+
+This DEFAULT-branch Python 3.15t source is deliberately **EXPERIMENTAL** for StableKite's existing default-branch pipeline.
+The A279 update fixes scoped free-threaded monkey.patch_all, native Cython c-ares, private libuv loops and fork watcher teardown on Windows.
+Actual native Windows CPython 3.15t source wheel: SHA256 326fcad020a604dd285668bf828fecb5b5bbff491aab40a5c230adc76ad1fff3 with scoped real tests 6/6, including GIL normal/off/on,
+CFFI libuv, native c-ares, 2 OS threads, Hub.destroy(destroy_loop=True) and monkey-patching. Linux CPython 3.15t source wheel SHA256
+27a6dc3a2b6faf66d49952a7120886279f94d4c6bb66ca640626a0017305c87e with CFFI libev/libuv, native c-ares and scoped real GIL off/on tests, including 4 genuine OS threads.
+Passing these bounded acceptance cases DOES NOT establish full gevent API parity, strict Pyright (still errors), process-wide
+SSL, signal/fork, long-stress or upstream release readiness. Upstream PR and production release are STRICT NO-GO.
+Do not silently enable the GIL on free-threaded CPython. This branch remains a development build (26.9.1.dev0).
+
+## Prior experimental default-branch note (A274; historical)
+
 # StableKite default branch — experimental Python 3.15t gevent
 
 This default-branch state is **EXPERIMENTAL**, intentionally exposed for the project's default-branch pipeline.

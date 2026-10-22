@@ -180,10 +180,12 @@ EXT_MODULES = [
     TRACER,
 ]
 
-# A263: eliminate ALL unaudited native C / Cython extension builds on cp315t,
-# not merely their runtime imports. CFFI modules are managed separately.
+# Free-threaded profile: all Cython gevent speed accelerators remain
+# disabled until independently audited, but c-ares is needed for the
+# public asynchronous DNS resolver and has a dedicated FT module gate.
+# This is a source candidate, not a production release qualification.
 if _CP_FT_BUILD:
-    EXT_MODULES = []
+    EXT_MODULES = [ARES]
     _to_cythonize = []
 
 if bool_from_environ('GEVENTSETUP_DISABLE_ARES'):

@@ -15,6 +15,7 @@ is an object of :class:`Config`.
 
 import importlib
 import os
+import sys
 import textwrap
 
 from gevent._compat import string_types
@@ -417,17 +418,18 @@ class Loop(ImportableSetting, Setting):
         if not IS_FREE_THREADED_BUILD:
             return super(Loop, self).validate(value)
         if isinstance(value, type):
-            # Use exact object identity, not __module__/__name__ (spoofable).
-            was_off = runtime_gil_disabled()
+            # CPython 3.15t: importlib's module locks may already have been
+            # monkey-patched by another caller, and acquiring such a lock
+            # while creating a Hub in a *native* OS thread can recurse back
+            # into Hub creation. A genuine class supplied by a caller must
+            # already be defined in an imported module, so validate its
+            # identity without re-entering importlib or creating a Hub.
+            # In particular, do NOT attempt to import the missing libev
+            # backend on Windows merely to check an existing libuv class.
             for path in self._SAFE_CFFI_PATHS:
-                try:
-                    candidate = self._import_one(path)
-                except ImportError:
-                    continue
-                if was_off and not runtime_gil_disabled():
-                    # Native module import must not silently enable the GIL.
-                    raise RuntimeError('Loading a CFFI loop unexpectedly enabled the GIL')
-                if value is candidate:
+                module_name, _, attribute = path.rpartition('.')
+                module = sys.modules.get(module_name)
+                if module is not None and value is vars(module).get(attribute):
                     return value
             raise ValueError('Free-threaded gevent requires an audited CFFI loop; unsafe loop class')
         if isinstance(value, str):

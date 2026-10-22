@@ -5,6 +5,7 @@ import functools
 import sys
 
 from gevent.libuv import _corecffi # pylint:disable=no-name-in-module,import-error
+from gevent._compat import IS_FREE_THREADED_BUILD
 
 # Nothing public here
 __all__ = []
@@ -558,24 +559,76 @@ class _SimulatedWithAsyncMixin(object):
         # called from stop
         raise NotImplementedError()
 
-class fork(_SimulatedWithAsyncMixin,
-           _base.ForkMixin,
-           watcher):
-    # We'll have to implement this one completely manually.
-    _watcher_skip_ffi = False
+# A278 Windows free-threaded fork watcher: Windows has no os.fork(), and
+# a simulated fork event does not need a native uv_async_t. Keeping the
+# latter alive after c-ares closes led to one native Hub.destroy(True)
+# deadlocking on uv_run(UV_RUN_ONCE) while closing its IOCP. Keep the
+# public fork watcher start/stop/close/callback interface and the Python
+# loop callback path; preserve the existing watcher on fork-capable OSes.
+if IS_FREE_THREADED_BUILD and sys.platform == 'win32':
+    class fork(_base.ForkMixin):
+        __slots__ = ('loop', 'ref', 'priority', 'callback', 'args', '_active')
 
-    def _register_loop_callback(self):
-        self.loop._fork_watchers.add(self)
+        def __init__(self, loop, ref=True, priority=None):
+            self.loop = loop
+            self.ref = ref
+            self.priority = priority
+            self.callback = None
+            self.args = ()
+            self._active = False
 
-    def _unregister_loop_callback(self):
-        try:
-            # stop() should be idempotent
-            self.loop._fork_watchers.remove(self)
-        except KeyError:
-            pass
+        @property
+        def active(self):
+            return self._active
 
-    def _on_fork(self):
-        self._async.send()
+        @property
+        def pending(self):
+            return False
+
+        def start(self, callback, *args):
+            if self.loop is None:
+                raise ValueError('Closed fork watcher')
+            if not callable(callback):
+                raise TypeError('fork callback must be callable')
+            self.callback = callback
+            self.args = args
+            self._active = True
+            self.loop._fork_watchers.add(self)
+
+        def stop(self):
+            if self.loop is not None:
+                self.loop._fork_watchers.discard(self)
+            self._active = False
+            self.callback = None
+            self.args = ()
+
+        def close(self):
+            self.stop()
+            self.loop = None
+
+        def _on_fork(self):
+            if self._active and self.loop is not None:
+                self.loop.run_callback(self.callback, *self.args)
+
+else:
+    class fork(_SimulatedWithAsyncMixin,
+               _base.ForkMixin,
+               watcher):
+        # Platforms supporting fork retain the original CFFI-backed
+        # implementation and event-loop notification semantics.
+        _watcher_skip_ffi = False
+
+        def _register_loop_callback(self):
+            self.loop._fork_watchers.add(self)
+
+        def _unregister_loop_callback(self):
+            try:
+                self.loop._fork_watchers.remove(self)
+            except KeyError:
+                pass
+
+        def _on_fork(self):
+            self._async.send()
 
 
 class child(_SimulatedWithAsyncMixin,

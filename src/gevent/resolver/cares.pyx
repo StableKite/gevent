@@ -4,6 +4,8 @@
 # can't compile ("local variable 'result' referenced before assignment").
 # See https://github.com/cython/cython/issues/1786
 # cython: auto_pickle=False,language_level=3str
+# Only the separately FT-reviewed native DNS module declares GIL compatibility.
+# cython: freethreading_compatible=True
 cimport libcares as cares
 import sys
 
@@ -12,11 +14,13 @@ from cpython.tuple cimport PyTuple_Check
 from cpython.getargs cimport PyArg_ParseTuple
 from cpython.ref cimport Py_INCREF
 from cpython.ref cimport Py_DECREF
+from cpython.pythread cimport PyThread_get_thread_ident
 from cpython.mem cimport PyMem_Malloc
 from cpython.mem cimport PyMem_Free
 from libc.string cimport memset
 
 from gevent._compat import MAC
+from gevent._compat import IS_FREE_THREADED_BUILD
 
 import _socket
 from _socket import gaierror
@@ -24,6 +28,15 @@ from _socket import herror
 
 
 __all__ = ['channel']
+
+# The c-ares library's global initialization cannot be called concurrently
+# by every Hub created on distinct OS threads in free-threaded CPython.
+# Module import is serialized by CPython's module machinery, including 3.15t.
+# Each OS-thread-owned channel is independently allocated below.
+if IS_FREE_THREADED_BUILD:
+    _cares_library_init_status = cares.ares_library_init(cares.ARES_LIB_INIT_ALL)
+    if _cares_library_init_status:
+        raise RuntimeError('Native c-ares global initialization failed: %d' % _cares_library_init_status)
 
 
 # These three constants used to be DEF, but the DEF construct
@@ -356,6 +369,14 @@ cdef int _make_sockaddr(const char* hostp, int port, int flowinfo, int scope_id,
 
 cdef class channel:
     cdef ares_channeldata* channel
+    # Native channel and event watchers belong to exactly one OS thread.
+    # Checking Python-thread identity alone is unreliable after monkey.patch_all.
+    cdef long _owner_thread_ident
+
+    cdef inline _require_owner_thread(self):
+        if (IS_FREE_THREADED_BUILD
+                and self._owner_thread_ident != PyThread_get_thread_ident()):
+            raise RuntimeError('Native c-ares channel belongs to its owning OS thread')
 
     cdef readonly object loop
 
@@ -365,6 +386,13 @@ cdef class channel:
     def __init__(self, object loop, flags=None, timeout=None, tries=None, ndots=None,
                  udp_port=None, tcp_port=None, servers=None):
         cdef ares_channeldata* channel = NULL
+        # Initialize Python attributes *before* any native operation can
+        # throw, including timer/watch allocation and callback setup.
+        self._owner_thread_ident = PyThread_get_thread_ident()
+        self.channel = NULL
+        self.loop = loop
+        self._timer = None
+        self._watchers = {}
         cdef cares.ares_options options
         memset(&options, 0, sizeof(cares.ares_options))
         cdef int optmask = cares.ARES_OPT_SOCK_STATE_CB
@@ -396,21 +424,21 @@ cdef class channel:
             options.tcp_port = int(tcp_port)
             optmask |= cares.ARES_OPT_TCP_PORT
 
-        cdef int result = cares.ares_library_init(cares.ARES_LIB_INIT_ALL)  # ARES_LIB_INIT_WIN32 -DUSE_WINSOCK?
+        cdef int result = cares.ARES_SUCCESS
+        if not IS_FREE_THREADED_BUILD:
+            result = cares.ares_library_init(cares.ARES_LIB_INIT_ALL)
         if result:
             raise gaierror(result, _gevent_gai_strerror(result))
         result = cares.ares_init_options(&channel, &options, optmask)
         if result:
             raise gaierror(result, _gevent_gai_strerror(result))
-        self._timer = loop.timer(TIMEOUT, TIMEOUT)
-        self._watchers = {}
         self.channel = channel
         try:
+            self._timer = loop.timer(TIMEOUT, TIMEOUT)
             if servers is not None:
                 self.set_servers(servers)
-            self.loop = loop
         except:
-            self.destroy()
+            self.__destroy()
             raise
 
     def __repr__(self):
@@ -418,21 +446,27 @@ cdef class channel:
         return '<%s at 0x%x _timer=%r _watchers[%s]>' % args
 
     def destroy(self):
+        self._require_owner_thread()
         self.__destroy()
 
     cdef __destroy(self):
-        if self.channel:
-            # XXX ares_library_cleanup?
-            cares.ares_destroy(self.channel)
+        cdef ares_channeldata* channel_ptr = self.channel
+        if channel_ptr:
+            # Mark destroyed before calling into c-ares: native destruction
+            # can synchronously invoke sock-state and cancellation callbacks.
             self.channel = NULL
-            self._watchers.clear()
-            self._timer.stop()
+            cares.ares_destroy(channel_ptr)
+            if self._watchers is not None:
+                self._watchers.clear()
+            if self._timer is not None:
+                self._timer.stop()
             self.loop = None
 
     def __dealloc__(self):
         self.__destroy()
 
     cpdef set_servers(self, servers=None):
+        self._require_owner_thread()
         if not self.channel:
             raise gaierror(cares.ARES_EDESTRUCTION, 'this ares channel has been destroyed')
         if not servers:
@@ -477,6 +511,7 @@ cdef class channel:
     #    cares.ares_cancel(self.channel)
 
     cdef _sock_state_callback(self, int socket, int read, int write):
+        self._require_owner_thread()
         if not self.channel:
             return
         cdef object watcher = self._watchers.get(socket)
@@ -506,9 +541,11 @@ cdef class channel:
         self._timer.again(self._on_timer)
 
     def _on_timer(self):
+        self._require_owner_thread()
         cares.ares_process_fd(self.channel, cares.ARES_SOCKET_BAD, cares.ARES_SOCKET_BAD)
 
     def _process_fd(self, int events, object watcher):
+        self._require_owner_thread()
         if not self.channel:
             return
         cdef int read_fd = watcher.fd
@@ -544,6 +581,7 @@ cdef class channel:
 
 
     def gethostbyname(self, object callback, char* name, int family=AF_INET):
+        self._require_owner_thread()
         if not self.channel:
             raise gaierror(cares.ARES_EDESTRUCTION, 'this ares channel has been destroyed')
         # note that for file lookups still AF_INET can be returned for AF_INET6 request
@@ -553,6 +591,7 @@ cdef class channel:
                                  <void*>channel._gethostbyname_or_byaddr_cb, <void*>arg)
 
     def gethostbyaddr(self, object callback, char* addr):
+        self._require_owner_thread()
         if not self.channel:
             raise gaierror(cares.ARES_EDESTRUCTION, 'this ares channel has been destroyed')
         # will guess the family
@@ -573,6 +612,7 @@ cdef class channel:
                                  <void*>channel._gethostbyname_or_byaddr_cb, <void*>arg)
 
     cpdef _getnameinfo(self, object callback, tuple sockaddr, int flags):
+        self._require_owner_thread()
         if not self.channel:
             raise gaierror(cares.ARES_EDESTRUCTION, 'this ares channel has been destroyed')
         cdef char* hostp = NULL
@@ -715,6 +755,7 @@ cdef class channel:
                     int type=0,
                     int proto=0,
                     int flags=0):
+        self._require_owner_thread()
         if not self.channel:
             raise gaierror(cares.ARES_EDESTRUCTION, 'this ares channel has been destroyed')
 
