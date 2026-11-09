@@ -411,7 +411,7 @@ class Loop(ImportableSetting, Setting):
             requested = os.environ.get(self.environment_key)
             if requested is not None:
                 return self._convert(requested)
-            return ['libuv-cffi', 'libev-cffi'] if WIN else ['libev-cffi', 'libuv-cffi']
+            return ['libuv-cffi', 'libev-cffi']
         return super(Loop, self)._default()
 
     def validate(self, value):

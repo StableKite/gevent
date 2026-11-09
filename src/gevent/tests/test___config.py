@@ -3,6 +3,7 @@
 import os
 import unittest
 import sys
+from unittest.mock import patch
 
 from gevent import _config
 
@@ -84,6 +85,23 @@ class TestResolver(unittest.TestCase):
 
         conf.resolver = 'block'
         self.assertEqual(conf.resolver, Resolver)
+
+@unittest.skipUnless(_config.IS_FREE_THREADED_BUILD, 'Free-threaded interpreter required')
+class TestFreeThreadedLoop(unittest.TestCase):
+
+    def test_default_uses_libuv_on_each_platform(self):
+        with patch.dict(os.environ):
+            os.environ.pop('GEVENT_LOOP', None)
+            for windows in (False, True):
+                with self.subTest(windows=windows), patch.object(_config, 'WIN', windows):
+                    setting = _config.Loop()
+                    self.assertEqual(setting._default()[0], 'libuv-cffi')
+                    self.assertEqual(setting.get().__module__, 'gevent.libuv.loop')
+
+    def test_explicit_libev_preference_preserved(self):
+        with patch.dict(os.environ, GEVENT_LOOP='libev-cffi'):
+            self.assertEqual(_config.Loop()._default(), ['libev-cffi'])
+
 
 class TestFunctions(unittest.TestCase):
 
