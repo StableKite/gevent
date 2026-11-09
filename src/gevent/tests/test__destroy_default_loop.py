@@ -1,9 +1,17 @@
 from __future__ import print_function
 import gevent
+from gevent._compat import IS_FREE_THREADED_BUILD
 
 import unittest
 
 class TestDestroyDefaultLoop(unittest.TestCase):
+
+    def test_destroy_suspended_hub_finishes_greenlet(self):
+        hub = gevent.get_hub()
+        gevent.sleep(0.001)
+        self.assertFalse(hub.dead)
+        hub.destroy(destroy_loop=True)
+        self.assertTrue(hub.dead)
 
     def tearDown(self):
         self._reset_hub()
@@ -30,8 +38,11 @@ class TestDestroyDefaultLoop(unittest.TestCase):
 
         # Get a new loop object, but using the default
         # C loop
-        loop = gevent.config.loop(default=True)
-        self.assertTrue(loop.default)
+        if IS_FREE_THREADED_BUILD:
+            with self.assertRaisesRegex(ValueError, 'private libuv loops'):
+                gevent.config.loop(default=True)
+        loop = gevent.config.loop(default=not IS_FREE_THREADED_BUILD)
+        self.assertEqual(loop.default, not IS_FREE_THREADED_BUILD)
         # Destroy it
 
         loop.destroy()
@@ -51,10 +62,10 @@ class TestDestroyDefaultLoop(unittest.TestCase):
     def test_destroy_two(self):
         # Get two new loop object, but using the default
         # C loop
-        loop1 = gevent.config.loop(default=True)
-        loop2 = gevent.config.loop(default=True)
-        self.assertTrue(loop1.default)
-        self.assertTrue(loop2.default)
+        loop1 = gevent.config.loop(default=not IS_FREE_THREADED_BUILD)
+        loop2 = gevent.config.loop(default=not IS_FREE_THREADED_BUILD)
+        self.assertEqual(loop1.default, not IS_FREE_THREADED_BUILD)
+        self.assertEqual(loop2.default, not IS_FREE_THREADED_BUILD)
         # Destroy the first
         loop1.destroy()
         # It no longer claims to be the default

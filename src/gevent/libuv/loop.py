@@ -542,6 +542,8 @@ class loop(AbstractLoop):
                 # so in that case, just spin the loop once (UV_RUN_NOWAIT) and
                 # go again.
                 self._run_callbacks()
+                if self._hub_destroyed is not None:
+                    self._raise_hub_destroyed()
                 self._prepare_ran_callbacks = False
 
                 # UV_RUN_ONCE will poll for IO, blocking for up to the time needed
@@ -559,11 +561,15 @@ class loop(AbstractLoop):
                 )
 
                 ran_status = libuv.uv_run(self._ptr, run_mode)
+                if self._hub_destroyed is not None:
+                    self._raise_hub_destroyed()
                 # Note that we run queued callbacks when the prepare watcher runs,
                 # thus accounting for timers that expired before polling for IO,
                 # and idle watchers. This next call should get IO callbacks and
                 # callbacks from timers that expired *after* polling for IO.
                 ran_callbacks = self.__run_queued_callbacks()
+                if self._hub_destroyed is not None:
+                    self._raise_hub_destroyed()
 
                 if not ran_status and not ran_callbacks and not self._prepare_ran_callbacks:
                     # A return of 0 means there are no referenced and
@@ -576,6 +582,8 @@ class loop(AbstractLoop):
 
         result = libuv.uv_run(self._ptr, mode)
         self.__run_queued_callbacks()
+        if self._hub_destroyed is not None:
+            self._raise_hub_destroyed()
         return result
 
     def now(self):

@@ -407,6 +407,7 @@ class AbstractLoop(object):
         self._handle_to_self = self._ffi.new_handle(self) # XXX: Reference cycle?
         self._watchers = watchers
         self._in_callback = False
+        self._hub_destroyed = None
         self._callbacks = deque()
         # Stores python watcher objects while they are started
         self._keepaliveset = set()
@@ -616,6 +617,7 @@ class AbstractLoop(object):
     def handle_error(self, context, type, value, tb):
         if type is HubDestroyed:
             self._callbacks.clear()
+            self._hub_destroyed = value
             self.break_()
             return
 
@@ -627,6 +629,12 @@ class AbstractLoop(object):
             handle_error(context, type, value, tb)
         else:
             self._default_handle_error(context, type, value, tb)
+
+    def _raise_hub_destroyed(self):
+        # Исключение пересекает границу CFFI после возврата из C.
+        exception = self._hub_destroyed
+        self._hub_destroyed = None
+        raise exception
 
     def _default_handle_error(self, context, type, value, tb): # pylint:disable=unused-argument
         # note: Hub sets its own error handler so this is not used by gevent

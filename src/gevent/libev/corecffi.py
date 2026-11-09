@@ -364,6 +364,8 @@ class loop(AbstractLoop):
             flags |= libev.EVRUN_ONCE
 
         libev.ev_run(self._ptr, flags)
+        if self._hub_destroyed is not None:
+            self._raise_hub_destroyed()
 
     def reinit(self):
         libev.ev_loop_fork(self._ptr)
