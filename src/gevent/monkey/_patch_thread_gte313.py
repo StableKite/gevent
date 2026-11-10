@@ -8,6 +8,7 @@ Internal use only.
 import sys
 
 from gevent.exceptions import LoopExit
+from gevent._hub_local import get_hub_if_exists
 
 from ._patch_thread_common import BasePatcher
 
@@ -51,16 +52,19 @@ class Patcher(BasePatcher):
         def _shutdown():
             # Release anyone trying to join() me,
             # and let us switch to them.
-            getattr(main_thread, handle_attr)._set_done()
-            from gevent import sleep
-            try:
-                sleep()
-            except: # pylint:disable=bare-except
-                # A greenlet could have .kill() us
-                # or .throw() to us. I'm the main greenlet,
-                # there's no where else for this to go.
-                from gevent import get_hub
-                get_hub().print_exception(_greenlet, *sys.exc_info())
+            # A disposed hub has no join waiters. Do not create a replacement
+            # during interpreter finalization just to notify an empty loop.
+            hub = get_hub_if_exists()
+            getattr(main_thread, handle_attr)._set_done(enter_hub=hub is not None)
+            if hub is not None:
+                from gevent import sleep
+                try:
+                    sleep()
+                except: # pylint:disable=bare-except
+                    # A greenlet could have .kill() us
+                    # or .throw() to us. I'm the main greenlet,
+                    # there's no where else for this to go.
+                    hub.print_exception(_greenlet, *sys.exc_info())
 
             # Now, this may have resulted in us getting stopped
             # if some other greenlet actually just ran there.
