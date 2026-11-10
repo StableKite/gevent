@@ -657,6 +657,10 @@ class child(_SimulatedWithAsyncMixin,
         self._async.send()
 
 
+if IS_FREE_THREADED_BUILD and sys.platform != 'win32':
+    from gevent.libuv._child import child
+
+
 class async_(_base.AsyncMixin, watcher):
     _watcher_callback_name = '_gevent_async_callback0'
 

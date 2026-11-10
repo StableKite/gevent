@@ -9,6 +9,7 @@ from functools import partial as _functools_partial
 
 import sys
 import traceback
+import atexit
 
 
 from greenlet import greenlet as RawGreenlet
@@ -891,6 +892,33 @@ class Hub(WaitOperationsGreenlet):
 
 
 set_default_hub_class(Hub)
+
+
+def _destroy_main_thread_hub():
+    # Registered during import, before application exit callbacks. Those may
+    # still use the current hub; release it only after they have completed.
+    hub = _get_hub()
+    if hub is not None:
+        import gc
+        from gevent.greenlet import killall
+        # Complete suspended stacks while their owner hub still exists. A
+        # dead hub cannot resume them to release CPython's frame chunks.
+        owned = [obj for obj in gc.get_objects()
+                 if isinstance(obj, RawGreenlet) and obj.parent is hub and not obj.dead]
+        threading_owned = [obj for obj in owned
+                           if getattr(obj, '_gevent_threading_bootstrap', False)]
+        ordinary = [obj for obj in owned
+                    if not getattr(obj, '_gevent_threading_bootstrap', False)]
+        try:
+            if threading_owned:
+                killall(threading_owned, exception=SystemExit, block=True, timeout=1)
+            if ordinary:
+                killall(ordinary, block=True, timeout=1)
+        finally:
+            hub.destroy(destroy_loop=True)
+
+
+atexit.register(_destroy_main_thread_hub)
 
 
 

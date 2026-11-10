@@ -132,7 +132,15 @@ def start_joinable_thread(function, handle=None, daemon=True): # pylint:disable=
     # the constructor of ThreadHande takes arbitrary positional
     # and keyword arguments, and throws them away. (The ident is set
     # by C code directly accessing internal structure members).
-    greenlet = _start_new_greenlet(function) # XXX: Daemon is ignored
+    greenlet = _start_new_greenlet(function)
+    # threading's bootstrap reports GreenletExit as an uncaught exception,
+    # but treats SystemExit as normal thread termination. Remember which
+    # stacks it owns so finalization can use that termination protocol.
+    import threading
+    greenlet._gevent_threading_bootstrap = (
+        isinstance(getattr(function, '__self__', None), threading.Thread)
+        and getattr(function, '__name__', None) == '_bootstrap'
+    )
 
     # 3.14 tests require always returning a handle object.
     if handle is None:
